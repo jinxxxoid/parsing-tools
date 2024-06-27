@@ -3,6 +3,9 @@ import feedparser
 import datetime
 from dateutil.parser import parse as parse_date
 from telegram.ext import ApplicationBuilder, CommandHandler, JobQueue
+from fastapi import FastAPI
+
+app = FastAPI()
 
 # Enable logging
 logging.basicConfig(
@@ -310,7 +313,8 @@ async def set_interval(update, context):
         await context.bot.send_message(chat_id=update.effective_chat.id, text="Usage: /interval <minutes>")
 
 
-if __name__ == '__main__':
+@app.get("/")
+async def start_bot():
     application = ApplicationBuilder().token(TOKEN).job_queue(JobQueue()).build()
 
     start_handler = CommandHandler('start', start)
@@ -339,3 +343,11 @@ if __name__ == '__main__':
     application.add_handler(list_keywords_handler)
 
     application.run_polling()
+    return {"message": "Bot started"}
+
+    # Ensure the bot stops gracefully
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await stop(None, None)
