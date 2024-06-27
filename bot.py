@@ -1,11 +1,10 @@
+import asyncio
 import logging
 import feedparser
 import datetime
 from dateutil.parser import parse as parse_date
 from telegram.ext import ApplicationBuilder, CommandHandler, JobQueue
 from fastapi import FastAPI
-
-app = FastAPI()
 
 # Enable logging
 logging.basicConfig(
@@ -313,6 +312,9 @@ async def set_interval(update, context):
         await context.bot.send_message(chat_id=update.effective_chat.id, text="Usage: /interval <minutes>")
 
 
+app = FastAPI()
+
+
 @app.get("/")
 async def start_bot():
     application = ApplicationBuilder().token(TOKEN).job_queue(JobQueue()).build()
@@ -336,18 +338,20 @@ async def start_bot():
     application.add_handler(parse_rss_handler)
     application.add_handler(add_rss_links_handler)
     application.add_handler(remove_rss_links_handler)
-
     application.add_handler(set_interval_handler)
     application.add_handler(add_keywords_handler)
     application.add_handler(remove_keywords_handler)
     application.add_handler(list_keywords_handler)
 
-    application.run_polling()
-    return {"message": "Bot started"}
+    async def run_bot():
+        await application.run_polling()
 
-    # Ensure the bot stops gracefully
+    await run_bot()
+
+    return {"message": "Bot started"}
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
+    # Ensure the bot stops gracefully
     await stop(None, None)
