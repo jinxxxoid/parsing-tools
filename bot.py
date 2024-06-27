@@ -22,7 +22,7 @@ rss_links = [
 ]
 
 # Preset keywords for scheduled parsing
-preset_keywords = ['Russia', 'Putin']
+preset_keywords = ['Russia', 'Putin', 'GRU']
 
 # Global variable to store the chat_id for the scheduled task and job interval
 chat_id = None
@@ -118,6 +118,15 @@ async def list_keywords(update, context):
         await context.bot.send_message(chat_id=update.effective_chat.id, text="No preset keywords defined.")
 
 
+async def list_rss_links(update, context):
+    if rss_links:
+        rss_list_text = "\n".join(rss_links)
+        await context.bot.send_message(chat_id=update.effective_chat.id,
+                                       text=f"Current RSS links:\n{rss_list_text}")
+    else:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="No RSS links configured.")
+
+
 async def start(update, context):
     global chat_id
     chat_id = update.effective_chat.id
@@ -160,6 +169,7 @@ async def help_command(update, context):
         "/add_keywords - Add new keywords to presets\n"
         "/remove_keyword - Remove keyword from presets\n"
         "/list_keywords - List all existing keyword presets\n"
+        "/list_rss_links - List all existing RSS links\n"
     )
     await context.bot.send_message(chat_id=update.effective_chat.id, text=help_text)
 
@@ -207,6 +217,23 @@ async def add_rss_links(update, context):
         else:
             logging.info(f"RSS link already exists: {link}")
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"RSS link already exists: {link}")
+
+
+async def remove_rss_links(update, context):
+    if len(context.args) < 1:
+        await context.bot.send_message(chat_id=update.effective_chat.id,
+                                       text="Usage: /remove_rss_link <rss_link>")
+        return
+
+    rss_link_to_remove = context.args[0]
+
+    if rss_link_to_remove in rss_links:
+        rss_links.remove(rss_link_to_remove)
+        await context.bot.send_message(chat_id=update.effective_chat.id,
+                                       text=f"Removed RSS link: {rss_link_to_remove}")
+    else:
+        await context.bot.send_message(chat_id=update.effective_chat.id,
+                                       text=f"RSS link '{rss_link_to_remove}' not found in the list.")
 
 
 async def parse_rss(update, context):
@@ -292,6 +319,7 @@ if __name__ == '__main__':
     help_handler = CommandHandler('help', help_command)
     parse_rss_handler = CommandHandler('f', parse_rss)
     add_rss_links_handler = CommandHandler('add_rss', add_rss_links)
+    remove_rss_links_handler = CommandHandler('remove_rss', remove_rss_links)
     set_interval_handler = CommandHandler('interval', set_interval)
     add_keywords_handler = CommandHandler('add_keywords', add_keywords)
     remove_keywords_handler = CommandHandler('remove_keyword', remove_keyword)
@@ -303,6 +331,8 @@ if __name__ == '__main__':
     application.add_handler(help_handler)
     application.add_handler(parse_rss_handler)
     application.add_handler(add_rss_links_handler)
+    application.add_handler(remove_rss_links_handler)
+
     application.add_handler(set_interval_handler)
     application.add_handler(add_keywords_handler)
     application.add_handler(remove_keywords_handler)
