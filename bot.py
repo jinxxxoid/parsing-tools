@@ -1,10 +1,8 @@
-import asyncio
 import logging
 import feedparser
 import datetime
 from dateutil.parser import parse as parse_date
 from telegram.ext import ApplicationBuilder, CommandHandler, JobQueue
-from fastapi import FastAPI
 
 # Enable logging
 logging.basicConfig(
@@ -24,53 +22,17 @@ rss_links = [
 ]
 
 # Preset keywords for scheduled parsing
-preset_keywords = ['Russia', 'Putin', 'GRU']
+preset_keywords = ['Russia', 'Putin']
 
 # Global variable to store the chat_id for the scheduled task and job interval
 chat_id = None
-job_interval = 900  # Default interval of 15 minutes in seconds
+job_interval = 120  # Default interval of 15 minutes in seconds
 
 
 async def periodic_task(context):
     logging.info("Executing periodic_task")
     for keyword in preset_keywords:
         await parse_rss_with_keyword(context, keyword)
-
-
-async def parse_rss_with_keyword(context, keyword):
-    time_frame = None
-    time_delta = get_time_frame_delta(time_frame)
-    found_articles = []
-
-    for rss_link in rss_links:
-        logging.info(f"Parsing RSS feed: {rss_link}")
-        feed = feedparser.parse(rss_link)
-        if feed.bozo:
-            error_message = f"Failed to parse RSS feed: {rss_link}"
-            logging.error(error_message)
-            await context.bot.send_message(chat_id=chat_id, text=error_message)
-            continue
-
-        articles_count = 0
-        for entry in feed.entries:
-            title = entry.title.lower()
-            description = entry.get('summary', '').lower()
-            pub_date = parse_date(entry.published) if 'published' in entry else None
-
-            if keyword.lower() in title or keyword.lower() in description:
-                if time_delta and pub_date and pub_date < time_delta:
-                    continue
-                found_articles.append((entry.title, entry.link))
-                articles_count += 1
-
-        logging.info(f"Found {articles_count} articles in RSS feed: {rss_link}")
-        await context.bot.send_message(chat_id=chat_id, text=f"Found {articles_count} articles in RSS feed: {rss_link}")
-
-    if found_articles:
-        for title, link in found_articles:
-            await context.bot.send_message(chat_id=chat_id, text=f"Found article: {title}\nLink: {link}")
-    else:
-        await context.bot.send_message(chat_id=chat_id, text=f"No articles found with the keyword '{keyword}'.")
 
 
 async def add_keywords(update, context):
@@ -165,7 +127,7 @@ async def help_command(update, context):
         "/status - Check if the bot is running\n"
         "/help - List all available commands\n"
         "/f <keyword1> <keyword2> <keyword3> <date_range> - Parse RSS feeds for articles containing the specified "
-        "keywords, date range\n"
+        "keywords, date range: today, yesterday, last hour, last day, last 3 days, last week \n"
         "/add_rss - add a custom list of RSS feeds\n"
         "/interval - Set an interval for checking news in minutes\n"
         "/add_keywords - Add new keywords to presets\n"
@@ -177,29 +139,20 @@ async def help_command(update, context):
 
 
 def get_time_frame_delta(time_frame):
-    if not time_frame:
-        return None
-
-    now = datetime.datetime.now()
+    logging.info(f"In timeframe: {time_frame}...")
+    now = datetime.datetime.now(datetime.timezone.utc)
 
     if time_frame == 'today':
-        return datetime.datetime.combine(now.date(), datetime.time(), tzinfo=datetime.timezone.utc)
+        start_of_day = datetime.datetime.combine(now.date(), datetime.time(), tzinfo=datetime.timezone.utc)
+        return start_of_day
     elif time_frame == 'yesterday':
         yesterday = now - datetime.timedelta(days=1)
-        return datetime.datetime.combine(yesterday.date(), datetime.time(), tzinfo=datetime.timezone.utc)
-    elif time_frame == 'this week':
-        start_of_week = now - datetime.timedelta(days=now.weekday())
-        return datetime.datetime.combine(start_of_week.date(), datetime.time(), tzinfo=datetime.timezone.utc)
+        start_of_yesterday = datetime.datetime.combine(yesterday.date(), datetime.time(), tzinfo=datetime.timezone.utc)
+        return start_of_yesterday
     elif time_frame == 'last hour':
         return now - datetime.timedelta(hours=1)
-    elif time_frame == 'last day':
-        return now - datetime.timedelta(days=1)
-    elif time_frame == 'last 3 days':
-        return now - datetime.timedelta(days=3)
-    elif time_frame == 'last week':
-        return now - datetime.timedelta(weeks=1)
-    elif len(time_frame) == 10 and time_frame[4] == '-' and time_frame[7] == '-':
-        return datetime.datetime.strptime(time_frame, '%Y-%m-%d').replace(tzinfo=datetime.timezone.utc)
+    elif time_frame == 'last 3 hours':
+        return now - datetime.timedelta(hours=3)
     return None
 
 
@@ -238,10 +191,49 @@ async def remove_rss_links(update, context):
                                        text=f"RSS link '{rss_link_to_remove}' not found in the list.")
 
 
+async def parse_rss_with_keyword(context, keyword):
+    time_frame = 'today'
+    time_delta = get_time_frame_delta(time_frame)
+    logging.info(f"Time delta is: {time_delta}...")
+    found_articles = []
+
+    for rss_link in rss_links:
+        logging.info(f"Parsing RSS feed: {rss_link}")
+        feed = feedparser.parse(rss_link)
+        if feed.bozo:
+            error_message = f"Failed to parse RSS feed: {rss_link}"
+            logging.error(error_message)
+            await context.bot.send_message(chat_id=chat_id, text=error_message)
+            continue
+
+        articles_count = 0
+        for entry in feed.entries:
+            title = entry.title.lower()
+            description = entry.get('summary', '').lower()
+            content = ' '.join([c['value'].lower() for c in entry.get('content', [])])
+            pub_date = parse_date(entry.published) if 'published' in entry else None
+
+            if pub_date and pub_date.tzinfo is None:
+                pub_date = pub_date.replace(tzinfo=datetime.timezone.utc)  # Ensure pub_date is timezone-aware
+
+            if keyword.lower() in title or keyword.lower() in description or keyword.lower() in content:
+                if time_delta and pub_date and pub_date < time_delta:
+                    continue
+                found_articles.append((entry.title, entry.link))
+                articles_count += 1
+
+        logging.info(f"Found {articles_count} articles in RSS feed: {rss_link}")
+
+    if found_articles:
+        for title, link in found_articles:
+            await context.bot.send_message(chat_id=chat_id, text=f"Found article: {title}\nLink: {link}")
+    else:
+        await context.bot.send_message(chat_id=chat_id, text=f"No articles found with the keyword '{keyword}'.")
+
+
 async def parse_rss(update, context):
     if len(context.args) < 1:
-        await context.bot.send_message(chat_id=update.effective_chat.id,
-                                       text="Usage: /parse [keyword1] [keyword2] [keyword3] [time_frame]")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Usage: /parse [keyword1] [keyword2] [keyword3] [time_frame]")
         return
 
     keywords = context.args[:5]  # Take up to 5 keywords
@@ -263,10 +255,14 @@ async def parse_rss(update, context):
         for entry in feed.entries:
             title = entry.title.lower()
             description = entry.get('summary', '').lower()
+            content = ' '.join([c['value'].lower() for c in entry.get('content', [])])
             pub_date = parse_date(entry.published) if 'published' in entry else None
 
+            if pub_date and pub_date.tzinfo is None:
+                pub_date = pub_date.replace(tzinfo=datetime.timezone.utc)  # Ensure pub_date is timezone-aware
+
             for keyword in keywords:
-                if keyword.lower() in title or keyword.lower() in description:
+                if keyword.lower() in title or keyword.lower() in description or keyword.lower() in content:
                     if time_delta and pub_date and pub_date < time_delta:
                         continue
                     found_articles.append((entry.title, entry.link))
@@ -274,16 +270,14 @@ async def parse_rss(update, context):
                     break  # Break out of keyword loop if found
 
         logging.info(f"Found {articles_count} articles in RSS feed: {rss_link}")
-        await context.bot.send_message(chat_id=update.effective_chat.id,
-                                       text=f"Found {articles_count} articles in RSS feed: {rss_link}")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Found {articles_count} articles in RSS feed: {rss_link}")
 
     if found_articles:
         for title, link in found_articles:
-            await context.bot.send_message(chat_id=update.effective_chat.id,
-                                           text=f"Found article: {title}\nLink: {link}")
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Found article: {title}\nLink: {link}")
     else:
-        await context.bot.send_message(chat_id=update.effective_chat.id,
-                                       text="No articles found with the specified keywords.")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="No articles found with the specified keywords.")
+
 
 
 async def set_interval(update, context):
@@ -312,11 +306,7 @@ async def set_interval(update, context):
         await context.bot.send_message(chat_id=update.effective_chat.id, text="Usage: /interval <minutes>")
 
 
-app = FastAPI()
-
-
-@app.get("/")
-async def start_bot():
+if __name__ == '__main__':
     application = ApplicationBuilder().token(TOKEN).job_queue(JobQueue()).build()
 
     start_handler = CommandHandler('start', start)
@@ -326,6 +316,7 @@ async def start_bot():
     parse_rss_handler = CommandHandler('f', parse_rss)
     add_rss_links_handler = CommandHandler('add_rss', add_rss_links)
     remove_rss_links_handler = CommandHandler('remove_rss', remove_rss_links)
+    list_rss_links_handler = CommandHandler('list_rss', list_rss_links)
     set_interval_handler = CommandHandler('interval', set_interval)
     add_keywords_handler = CommandHandler('add_keywords', add_keywords)
     remove_keywords_handler = CommandHandler('remove_keyword', remove_keyword)
@@ -338,20 +329,11 @@ async def start_bot():
     application.add_handler(parse_rss_handler)
     application.add_handler(add_rss_links_handler)
     application.add_handler(remove_rss_links_handler)
+    application.add_handler(list_rss_links_handler)
+
     application.add_handler(set_interval_handler)
     application.add_handler(add_keywords_handler)
     application.add_handler(remove_keywords_handler)
     application.add_handler(list_keywords_handler)
 
-    async def run_bot():
-        await application.run_polling()
-
-    await run_bot()
-
-    return {"message": "Bot started"}
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    # Ensure the bot stops gracefully
-    await stop(None, None)
+    application.run_polling()
