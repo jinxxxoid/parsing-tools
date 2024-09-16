@@ -1,4 +1,6 @@
 import logging
+from types import SimpleNamespace
+import re
 import feedparser
 import datetime
 from dateutil.parser import parse as parse_date
@@ -12,27 +14,45 @@ logging.basicConfig(
 
 TOKEN = "7324107123:AAHj0uyWdHtqDzESBnP54jvZ0RrUoFTSQpw"
 
+sent_links = set()
+
 # List of predefined RSS links
 rss_links = [
     'https://feeds.bloomberg.com/politics/news.rss',
+    'https://feeds.bloomberg.com/economics/news.rss',
+    'https://feeds.bloomberg.com/bview/news.rss',
+    'https://feeds.bloomberg.com/wealth/news.rss',
     'https://feeds.bloomberg.com/markets/news.rss',
+    'https://feeds.bloomberg.com/technology/news.rss',
+    'https://news.google.com/rss/search?q=when:24h+allinurl:bloomberg.com&hl=en-US&gl=US&ceid=US:en',
     'https://www.ft.com/rss/home',
     'http://feeds.washingtonpost.com/rss/world',
-    'http://rss.nytimes.com/services/xml/rss/nyt/World.xml'
+    'http://rss.nytimes.com/services/xml/rss/nyt/World.xml',
+    'https://foreignpolicy.com/feed/',
+    'https://www.france24.com/en/europe/rss',
+    'https://www.france24.com/en/rss',
+    'https://www.lemonde.fr/en/rss/une.xml',
+    'https://www.rfi.fr/en/rss',
+    'https://www.mediapart.fr/articles/feed',
+    'https://feeds.leparisien.fr/leparisien/rss',
+    'https://feeds.leparisien.fr/leparisien/rss/politique',
+    'https://feeds.bbci.co.uk/news/world/rss.xml',
+    'https://feeds.bbci.co.uk/news/politics/rss.xml',
+    'https://feeds.bbci.co.uk/news/rss.xml',
+    'https://www.theguardian.com/world/rss',
+    'https://www.theguardian.com/world/europe-news/rss',
+    'http://www.faz.net/rss/aktuell/'
 ]
 
 # Preset keywords for scheduled parsing
-preset_keywords = ['Russia', 'Putin']
+preset_keywords = ['Russia', 'Putin', 'Kremlin', 'Russie', 'Poutine', 'Russland', 'Russischen Föderation']
 
 # Global variable to store the chat_id for the scheduled task and job interval
 chat_id = None
-job_interval = 120  # Default interval of 15 minutes in seconds
+job_interval = 900  # Default interval of 15 minutes in seconds
 
-
-async def periodic_task(context):
-    logging.info("Executing periodic_task")
-    for keyword in preset_keywords:
-        await parse_rss_with_keyword(context, keyword)
+# Global dictionary to track user-specific states
+user_states = {}
 
 
 async def add_keywords(update, context):
@@ -74,45 +94,122 @@ async def remove_keyword(update, context):
 
 
 async def list_keywords(update, context):
+    user_id = update.effective_chat.id
     if preset_keywords:
         keywords_list = '\n'.join(preset_keywords)
-        await context.bot.send_message(chat_id=update.effective_chat.id,
+        await context.bot.send_message(chat_id=user_id,
                                        text=f"Current preset keywords:\n{keywords_list}")
     else:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="No preset keywords defined.")
 
+        logging.info(f"Starting scheduled RSS parsing job every {job_interval // 60} minutes.")
+    await context.bot.send_message(chat_id=user_id, text=f"Scheduled RSS parsing job started, "
+                                                         f"running every {job_interval // 60} minutes.")
 
-async def list_rss_links(update, context):
-    if rss_links:
-        rss_list_text = "\n".join(rss_links)
-        await context.bot.send_message(chat_id=update.effective_chat.id,
-                                       text=f"Current RSS links:\n{rss_list_text}")
-    else:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="No RSS links configured.")
+    # Schedule the periodic_task job for this user
+    context.job_queue.run_repeating(lambda context: periodic_task(context, user_id), interval=job_interval,
+                                    name=f"user_{user_id}_job")
 
 
 async def start(update, context):
-    global chat_id
-    chat_id = update.effective_chat.id
+    global user_states
+
+    user_id = update.effective_chat.id
+    if user_id in user_states and user_states[user_id]:
+        await context.bot.send_message(chat_id=user_id, text="Bot is already running.")
+        return
+
+    user_states[user_id] = True
     current_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    await context.bot.send_message(chat_id=chat_id,
+    await context.bot.send_message(chat_id=user_id,
                                    text=f"Hey there! I'm up and running at {current_time}")
 
-    # Indicate that the job is starting
-    logging.info(f"Starting scheduled RSS parsing job every {job_interval // 60} minutes.")
-    await context.bot.send_message(chat_id=chat_id, text=f"Scheduled RSS parsing job started, "
+    logging.info(f"Starting scheduled RSS parsing job every {job_interval // 60} minutes for user {user_id}.")
+    await context.bot.send_message(chat_id=user_id, text=f"Scheduled RSS parsing job started, "
                                                          f"running every {job_interval // 60} minutes.")
 
-    # Schedule the periodic_task job
-    context.job_queue.run_repeating(periodic_task, interval=job_interval)
+    # Schedule the periodic_task job for this user
+    context.job_queue.run_repeating(lambda context: periodic_task(context, user_id), interval=job_interval,
+                                    name=f"user_{user_id}_job")
+
+
+async def periodic_task(context, user_id):
+    if user_states.get(user_id, False):
+        logging.info(f"Executing periodic_task for user {user_id}")
+        # Handle errors within the task to ensure uninterrupted execution
+        try:
+            await parse_rss_feeds(None, SimpleNamespace(args=[]))
+        except Exception as e:
+            logging.error(f"Error during periodic task for user {user_id}: {e}")
+
+
+async def parse_rss_feeds(update, context):
+    keywords = context.args[:-1] if len(context.args) > 1 else preset_keywords
+    time_frame = context.args[-1] if context.args and context.args[-1] in ['today', 'yesterday', 'last hour',
+                                                                           'last 3 hours'] else 'today'
+
+    if not context.args:
+        keywords = preset_keywords
+        time_frame = 'today'
+
+    time_delta = get_time_frame_delta(time_frame)
+    found_articles = []
+
+    logging.info(f"Parsing RSS feeds with keywords: {keywords} and time frame: {time_frame}")
+
+    for rss_link in set(rss_links):
+        logging.info(f"Parsing RSS feed: {rss_link}")
+        try:
+            feed = feedparser.parse(rss_link)
+            if feed.bozo:
+                raise Exception(f"Failed to parse RSS feed: {rss_link}")
+
+            articles_count = 0
+            for entry in feed.entries:
+                title = entry.title
+                description = entry.get('summary', '')
+                content = ' '.join([c['value'] for c in entry.get('content', [])])
+                pub_date = parse_date(entry.published) if 'published' in entry else None
+
+                if pub_date and pub_date.tzinfo is None:
+                    pub_date = pub_date.replace(tzinfo=datetime.timezone.utc)
+
+                for keyword in keywords:
+                    pattern = create_keyword_pattern(keyword)
+                    if (pattern.search(title) or pattern.search(description) or pattern.search(content)) and (
+                            entry.link not in sent_links):
+                        if time_delta and pub_date and pub_date >= time_delta:
+                            found_articles.append((entry.title, entry.link))
+                            sent_links.add(entry.link)
+                            articles_count += 1
+                            break
+
+            logging.info(f"Found {articles_count} articles in RSS feed: {rss_link}")
+        except Exception as e:
+            error_message = f"Error processing RSS feed: {rss_link}, error: {str(e)}"
+            logging.error(error_message)
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=error_message)
+
+    if found_articles:
+        for title, link in found_articles:
+            await context.bot.send_message(chat_id=update.effective_chat.id,
+                                           text=f"Found article: {title}\nLink: {link}")
+    else:
+        await context.bot.send_message(chat_id=update.effective_chat.id,
+                                       text=f"No articles found with the specified keywords.")
 
 
 async def stop(update, context):
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="Stopping bot...")
+    global user_states
+
+    user_id = update.effective_chat.id
+    if user_id not in user_states or not user_states[user_id]:
+        await context.bot.send_message(chat_id=user_id, text="Bot is not running.")
+        return
+
+    user_states[user_id] = False
+    await context.bot.send_message(chat_id=user_id, text="Stopping bot...")
     logging.info("Stopping bot...")
-    await context.application.stop()
-    await context.application.shutdown()  # Ensure all tasks are awaited
-    context.job_queue.stop()
+    context.job_queue.stop()  # Stops all jobs (you might want to manage this more specifically)
     logging.info("Bot stopped")
 
 
@@ -144,10 +241,13 @@ def get_time_frame_delta(time_frame):
 
     if time_frame == 'today':
         start_of_day = datetime.datetime.combine(now.date(), datetime.time(), tzinfo=datetime.timezone.utc)
+        logging.info(f"Start of today {start_of_day}")
         return start_of_day
     elif time_frame == 'yesterday':
         yesterday = now - datetime.timedelta(days=1)
+        logging.info(f"Yesterday: {yesterday}")
         start_of_yesterday = datetime.datetime.combine(yesterday.date(), datetime.time(), tzinfo=datetime.timezone.utc)
+        logging.info(f"Start of Yesterday {start_of_yesterday}")
         return start_of_yesterday
     elif time_frame == 'last hour':
         return now - datetime.timedelta(hours=1)
@@ -174,6 +274,15 @@ async def add_rss_links(update, context):
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"RSS link already exists: {link}")
 
 
+async def list_rss_links(update, context):
+    if rss_links:
+        rss_list_text = "\n".join(rss_links)
+        await context.bot.send_message(chat_id=update.effective_chat.id,
+                                       text=f"Current RSS links:\n{rss_list_text}")
+    else:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="No RSS links configured.")
+
+
 async def remove_rss_links(update, context):
     if len(context.args) < 1:
         await context.bot.send_message(chat_id=update.effective_chat.id,
@@ -191,93 +300,8 @@ async def remove_rss_links(update, context):
                                        text=f"RSS link '{rss_link_to_remove}' not found in the list.")
 
 
-async def parse_rss_with_keyword(context, keyword):
-    time_frame = 'today'
-    time_delta = get_time_frame_delta(time_frame)
-    logging.info(f"Time delta is: {time_delta}...")
-    found_articles = []
-
-    for rss_link in rss_links:
-        logging.info(f"Parsing RSS feed: {rss_link}")
-        feed = feedparser.parse(rss_link)
-        if feed.bozo:
-            error_message = f"Failed to parse RSS feed: {rss_link}"
-            logging.error(error_message)
-            await context.bot.send_message(chat_id=chat_id, text=error_message)
-            continue
-
-        articles_count = 0
-        for entry in feed.entries:
-            title = entry.title.lower()
-            description = entry.get('summary', '').lower()
-            content = ' '.join([c['value'].lower() for c in entry.get('content', [])])
-            pub_date = parse_date(entry.published) if 'published' in entry else None
-
-            if pub_date and pub_date.tzinfo is None:
-                pub_date = pub_date.replace(tzinfo=datetime.timezone.utc)  # Ensure pub_date is timezone-aware
-
-            if keyword.lower() in title or keyword.lower() in description or keyword.lower() in content:
-                if time_delta and pub_date and pub_date < time_delta:
-                    continue
-                found_articles.append((entry.title, entry.link))
-                articles_count += 1
-
-        logging.info(f"Found {articles_count} articles in RSS feed: {rss_link}")
-
-    if found_articles:
-        for title, link in found_articles:
-            await context.bot.send_message(chat_id=chat_id, text=f"Found article: {title}\nLink: {link}")
-    else:
-        await context.bot.send_message(chat_id=chat_id, text=f"No articles found with the keyword '{keyword}'.")
-
-
-async def parse_rss(update, context):
-    if len(context.args) < 1:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="Usage: /parse [keyword1] [keyword2] [keyword3] [time_frame]")
-        return
-
-    keywords = context.args[:5]  # Take up to 5 keywords
-    time_frame = context.args[5] if len(context.args) > 5 else None
-    time_delta = get_time_frame_delta(time_frame)
-
-    found_articles = []
-
-    for rss_link in rss_links:
-        logging.info(f"Parsing RSS feed: {rss_link}")
-        feed = feedparser.parse(rss_link)
-        if feed.bozo:
-            error_message = f"Failed to parse RSS feed: {rss_link}"
-            logging.error(error_message)
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=error_message)
-            continue
-
-        articles_count = 0
-        for entry in feed.entries:
-            title = entry.title.lower()
-            description = entry.get('summary', '').lower()
-            content = ' '.join([c['value'].lower() for c in entry.get('content', [])])
-            pub_date = parse_date(entry.published) if 'published' in entry else None
-
-            if pub_date and pub_date.tzinfo is None:
-                pub_date = pub_date.replace(tzinfo=datetime.timezone.utc)  # Ensure pub_date is timezone-aware
-
-            for keyword in keywords:
-                if keyword.lower() in title or keyword.lower() in description or keyword.lower() in content:
-                    if time_delta and pub_date and pub_date < time_delta:
-                        continue
-                    found_articles.append((entry.title, entry.link))
-                    articles_count += 1
-                    break  # Break out of keyword loop if found
-
-        logging.info(f"Found {articles_count} articles in RSS feed: {rss_link}")
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Found {articles_count} articles in RSS feed: {rss_link}")
-
-    if found_articles:
-        for title, link in found_articles:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Found article: {title}\nLink: {link}")
-    else:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="No articles found with the specified keywords.")
-
+def create_keyword_pattern(keyword):
+    return re.compile(r'\b' + re.escape(keyword) + r'\b')
 
 
 async def set_interval(update, context):
@@ -313,7 +337,7 @@ if __name__ == '__main__':
     stop_handler = CommandHandler('stop', stop)
     status_handler = CommandHandler('status', status)
     help_handler = CommandHandler('help', help_command)
-    parse_rss_handler = CommandHandler('f', parse_rss)
+    parse_rss_handler = CommandHandler('f', parse_rss_feeds)
     add_rss_links_handler = CommandHandler('add_rss', add_rss_links)
     remove_rss_links_handler = CommandHandler('remove_rss', remove_rss_links)
     list_rss_links_handler = CommandHandler('list_rss', list_rss_links)
