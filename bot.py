@@ -12,7 +12,7 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-TOKEN = "7324107123:AAHj0uyWdHtqDzESBnP54jvZ0RrUoFTSQpw"
+TOKEN = ""
 
 sent_links = set()
 
